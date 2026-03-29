@@ -1,6 +1,8 @@
 name: Deliver Daily Digest
 
 on:
+  schedule:
+    - cron: '0 1 * * *'  # 1am UTC = 10am Tokyo (JST)
   workflow_run:
     workflows: ["Generate Feeds"]
     types:
@@ -10,7 +12,7 @@ on:
 jobs:
   deliver:
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.event.workflow_run.conclusion == 'success' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -78,7 +80,7 @@ jobs:
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                   contents: [{ parts: [{ text: finalPrompt }] }],
-                  generationConfig: { maxOutputTokens: 4000 }
+                  generationConfig: { maxOutputTokens: 10000 }
                 })
               }
             );
