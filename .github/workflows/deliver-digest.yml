@@ -53,18 +53,41 @@ jobs:
           \${JSON.stringify(data, null, 2)}\`;
 
           async function generate() {
+            // Trim data to avoid exceeding Gemini's context limit
+            const trimmed = {
+              config: data.config,
+              prompts: data.prompts,
+              x: (data.x || []).slice(0, 15).map(b => ({
+                name: b.name, bio: b.bio,
+                tweets: (b.tweets || []).slice(0, 3)
+              })),
+              podcasts: (data.podcasts || []).slice(0, 1).map(p => ({
+                name: p.name, title: p.title, url: p.url,
+                transcript: (p.transcript || '').slice(0, 3000)
+              }))
+            };
+            const finalPrompt = prompt.replace(
+              JSON.stringify(data, null, 2),
+              JSON.stringify(trimmed, null, 2)
+            );
+            console.log('Prompt length:', finalPrompt.length);
             const res = await fetch(
-              \`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=\${process.env.GEMINI_API_KEY}\`,
+              \`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=\${process.env.GEMINI_API_KEY}\`,
               {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                  contents: [{ parts: [{ text: prompt }] }],
+                  contents: [{ parts: [{ text: finalPrompt }] }],
                   generationConfig: { maxOutputTokens: 4000 }
                 })
               }
             );
             const result = await res.json();
+            console.log('Gemini response status:', res.status);
+            if (!result.candidates || !result.candidates[0]) {
+              console.error('Gemini error:', JSON.stringify(result, null, 2));
+              process.exit(1);
+            }
             const digest = result.candidates[0].content.parts[0].text;
             fs.writeFileSync('/tmp/digest.txt', digest);
             console.log('Digest generated, length:', digest.length);
