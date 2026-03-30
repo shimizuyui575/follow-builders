@@ -125,9 +125,8 @@ jobs:
           async function main() {
             const chunks = [];
             let remaining = text;
-            while (remaining.length > 4000) {  
-而（剩余长度>4000） {
-              let cut = remaining.lastIndexOf('\n\n', 4000);
+            while (remaining.length > 4000) {
+              let cut = remaining.lastIndexOf("\n\n", 4000);
               if (cut === -1) cut = 4000;
               chunks.push(remaining.slice(0, cut));
               remaining = remaining.slice(cut).trim();
