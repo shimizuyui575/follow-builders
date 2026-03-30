@@ -98,8 +98,7 @@ jobs:
               body: JSON.stringify({ chat_id: chatId, text: chunk })
             });
             const r = await res.json();
-            if (!r.ok) console.error('Telegram error:', r.description);  
-if （！r.ok） console.error（'Telegram error：'， r.description）;
+            if (!r.ok) console.error('Telegram error:', r.description);
           }
 
           const chunks = [];
