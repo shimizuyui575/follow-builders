@@ -3,16 +3,11 @@ name: Deliver Daily Digest
 on:
   schedule:
     - cron: '0 1 * * *'  # 1am UTC = 10am Tokyo (JST)
-  workflow_run:
-    workflows: ["Generate Feeds"]
-    types:
-      - completed
   workflow_dispatch: {}
 
 jobs:
   deliver:
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.event.workflow_run.conclusion == 'success' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -130,7 +125,8 @@ jobs:
           async function main() {
             const chunks = [];
             let remaining = text;
-            while (remaining.length > 4000) {
+            while (remaining.length > 4000) {  
+而（剩余长度>4000） {
               let cut = remaining.lastIndexOf('\n\n', 4000);
               if (cut === -1) cut = 4000;
               chunks.push(remaining.slice(0, cut));
