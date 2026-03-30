@@ -26,120 +26,104 @@ jobs:
         run: |
           cd scripts
           node prepare-digest.js > /tmp/digest-data.json
-          echo "status=$(cat /tmp/digest-data.json | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>console.log(JSON.parse(d).status))')" >> $GITHUB_OUTPUT
+          STATUS=$(node -e "const d=require('/tmp/digest-data.json'); console.log(d.status)")
+          echo "status=$STATUS" >> $GITHUB_OUTPUT
 
-      - name: Generate bilingual digest with Gemini
+      - name: Write Gemini script
         if: steps.prepare.outputs.status == 'ok'
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
-          node -e "
-          const fs = require('fs');
-          const data = JSON.parse(fs.readFileSync('/tmp/digest-data.json', 'utf8'));
-
-          const prompt = \`You are an AI Builders Digest curator. Based on the following data, generate a bilingual (English + Chinese interleaved) digest of what top AI builders are saying today.
-
+          cat > /tmp/gemini.mjs << 'EOF'
+          import { readFileSync, writeFileSync } from 'fs';
+          const data = JSON.parse(readFileSync('/tmp/digest-data.json', 'utf8'));
+          const trimmed = {
+            config: data.config,
+            prompts: data.prompts,
+            x: (data.x || []).slice(0, 15).map(b => ({
+              name: b.name, bio: b.bio,
+              tweets: (b.tweets || []).slice(0, 3)
+            })),
+            podcasts: (data.podcasts || []).slice(0, 1).map(p => ({
+              name: p.name, title: p.title, url: p.url,
+              transcript: (p.transcript || '').slice(0, 3000)
+            }))
+          };
+          const prompt = `You are an AI Builders Digest curator. Generate a bilingual (English + Chinese interleaved) digest of what top AI builders are saying today.
           Rules:
           - Follow the prompts in data.prompts exactly
           - Interleave English and Chinese paragraph by paragraph for each builder
           - Every item must include its URL
-          - Never invent content — only use what's in the data
-          - Keep it concise and focused on insights
+          - Never invent content
+          Data: ${JSON.stringify(trimmed, null, 2)}`;
 
-          Data:
-          \${JSON.stringify(data, null, 2)}\`;
-
-          async function generate() {
-            // Trim data to avoid exceeding Gemini's context limit
-            const trimmed = {
-              config: data.config,
-              prompts: data.prompts,
-              x: (data.x || []).slice(0, 15).map(b => ({
-                name: b.name, bio: b.bio,
-                tweets: (b.tweets || []).slice(0, 3)
-              })),
-              podcasts: (data.podcasts || []).slice(0, 1).map(p => ({
-                name: p.name, title: p.title, url: p.url,
-                transcript: (p.transcript || '').slice(0, 3000)
-              }))
-            };
-            const finalPrompt = prompt.replace(
-              JSON.stringify(data, null, 2),
-              JSON.stringify(trimmed, null, 2)
-            );
-            console.log('Prompt length:', finalPrompt.length);
-            const res = await fetch(
-              \`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=\${process.env.GEMINI_API_KEY}\`,
-              {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  contents: [{ parts: [{ text: finalPrompt }] }],
-                  generationConfig: { maxOutputTokens: 10000 }
-                })
-              }
-            );
-            const result = await res.json();
-            console.log('Gemini response status:', res.status);
-            if (!result.candidates || !result.candidates[0]) {
-              console.error('Gemini error:', JSON.stringify(result, null, 2));
-              process.exit(1);
+          const res = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                contents: [{ parts: [{ text: prompt }] }],
+                generationConfig: { maxOutputTokens: 10000 }
+              })
             }
-            const digest = result.candidates[0].content.parts[0].text;
-            fs.writeFileSync('/tmp/digest.txt', digest);
-            console.log('Digest generated, length:', digest.length);
+          );
+          const result = await res.json();
+          if (!result.candidates || !result.candidates[0]) {
+            console.error('Gemini error:', JSON.stringify(result));
+            process.exit(1);
           }
-          generate().catch(e => { console.error(e); process.exit(1); });
-          "
+          const digest = result.candidates[0].content.parts[0].text;
+          writeFileSync('/tmp/digest.txt', digest);
+          console.log('Digest generated, length:', digest.length);
+          EOF
+
+      - name: Generate digest with Gemini
+        if: steps.prepare.outputs.status == 'ok'
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: node /tmp/gemini.mjs
+
+      - name: Write Telegram script
+        if: steps.prepare.outputs.status == 'ok'
+        run: |
+          cat > /tmp/send-telegram.mjs << 'EOF'
+          import { readFileSync } from 'fs';
+          const text = readFileSync('/tmp/digest.txt', 'utf8');
+          const token = process.env.TELEGRAM_BOT_TOKEN;
+          const chatId = process.env.TELEGRAM_CHAT_ID;
+
+          async function send(chunk) {
+            const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ chat_id: chatId, text: chunk })
+            });
+            const r = await res.json();
+            if (!r.ok) console.error('Telegram error:', r.description);  
+if （！r.ok） console.error（'Telegram error：'， r.description）;
+          }
+
+          const chunks = [];
+          let remaining = text;
+          while (remaining.length > 4000) {
+            let cut = remaining.lastIndexOf('\n\n', 4000);
+            if (cut === -1) cut = 4000;
+            chunks.push(remaining.slice(0, cut));
+            remaining = remaining.slice(cut).trim();
+          }
+          chunks.push(remaining);
+          for (const chunk of chunks) {
+            await send(chunk);
+            await new Promise(r => setTimeout(r, 1000));
+          }
+          console.log('Sent', chunks.length, 'message(s)');
+          EOF
 
       - name: Send to Telegram
         if: steps.prepare.outputs.status == 'ok'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          # Telegram has 4096 char limit per message, split if needed
-          node -e "
-          const fs = require('fs');
-          const text = fs.readFileSync('/tmp/digest.txt', 'utf8');
-          const token = process.env.TELEGRAM_BOT_TOKEN;
-          const chatId = process.env.TELEGRAM_CHAT_ID;
-
-          async function send(chunk) {
-            const res = await fetch(\`https://api.telegram.org/bot\${token}/sendMessage\`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ chat_id: chatId, text: chunk, parse_mode: 'Markdown' })
-            });
-            const r = await res.json();
-            if (!r.ok) {
-              // retry without markdown if formatting fails
-              const res2 = await fetch(\`https://api.telegram.org/bot\${token}/sendMessage\`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ chat_id: chatId, text: chunk })
-              });
-            }
-          }
-
-          async function main() {
-            const chunks = [];
-            let remaining = text;
-            while (remaining.length > 4000) {
-              let cut = remaining.lastIndexOf("\n\n", 4000);
-              if (cut === -1) cut = 4000;
-              chunks.push(remaining.slice(0, cut));
-              remaining = remaining.slice(cut).trim();
-            }
-            chunks.push(remaining);
-            for (const chunk of chunks) {
-              await send(chunk);
-              await new Promise(r => setTimeout(r, 1000));
-            }
-            console.log('Sent', chunks.length, 'message(s)');
-          }
-          main().catch(e => { console.error(e); process.exit(1); });
-          "
+        run: node /tmp/send-telegram.mjs
 
       - name: No content today
         if: steps.prepare.outputs.status != 'ok'
