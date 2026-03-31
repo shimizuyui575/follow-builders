@@ -1,13 +1,28 @@
-name: Deliver Daily Digest
+name: Generate Feeds
 
 on:
   schedule:
-    - cron: '0 1 * * *'  # 1am UTC = 10am Tokyo (JST)
-  workflow_dispatch: {}
+    # All feeds (tweets, podcasts, blogs): once daily at 6am UTC
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'What to fetch'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - tweets-only
+          - podcasts-only
+          - blogs-only
 
 jobs:
-  deliver:
+  generate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
     steps:
       - uses: actions/checkout@v4
 
@@ -18,112 +33,20 @@ jobs:
       - name: Install dependencies
         run: cd scripts && npm install
 
-      - name: Pull latest feeds
-        run: git pull origin main
-
-      - name: Prepare digest data
-        id: prepare
-        run: |
-          cd scripts
-          node prepare-digest.js > /tmp/digest-data.json
-          STATUS=$(node -e "const d=require('/tmp/digest-data.json'); console.log(d.status)")
-          echo "status=$STATUS" >> $GITHUB_OUTPUT
-
-      - name: Write Gemini script
-        if: steps.prepare.outputs.status == 'ok'
-        run: |
-          cat > /tmp/gemini.mjs << 'EOF'
-          import { readFileSync, writeFileSync } from 'fs';
-          const data = JSON.parse(readFileSync('/tmp/digest-data.json', 'utf8'));
-          const trimmed = {
-            config: data.config,
-            prompts: data.prompts,
-            x: (data.x || []).slice(0, 15).map(b => ({
-              name: b.name, bio: b.bio,
-              tweets: (b.tweets || []).slice(0, 3)
-            })),
-            podcasts: (data.podcasts || []).slice(0, 1).map(p => ({
-              name: p.name, title: p.title, url: p.url,
-              transcript: (p.transcript || '').slice(0, 3000)
-            }))
-          };
-          const prompt = `You are an AI Builders Digest curator. Generate a bilingual (English + Chinese interleaved) digest of what top AI builders are saying today.
-          Rules:
-          - Follow the prompts in data.prompts exactly
-          - Interleave English and Chinese paragraph by paragraph for each builder
-          - Every item must include its URL
-          - Never invent content
-          Data: ${JSON.stringify(trimmed, null, 2)}`;
-
-          const res = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
-            {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                contents: [{ parts: [{ text: prompt }] }],
-                generationConfig: { maxOutputTokens: 10000 }
-              })
-            }
-          );
-          const result = await res.json();
-          if (!result.candidates || !result.candidates[0]) {
-            console.error('Gemini error:', JSON.stringify(result));
-            process.exit(1);
-          }
-          const digest = result.candidates[0].content.parts[0].text;
-          writeFileSync('/tmp/digest.txt', digest);
-          console.log('Digest generated, length:', digest.length);
-          EOF
-
-      - name: Generate digest with Gemini
-        if: steps.prepare.outputs.status == 'ok'
+      - name: Generate feeds
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: node /tmp/gemini.mjs
-
-      - name: Write Telegram script
-        if: steps.prepare.outputs.status == 'ok'
+          X_BEARER_TOKEN: ${{ secrets.X_BEARER_TOKEN }}
         run: |
-          cat > /tmp/send-telegram.mjs << 'EOF'
-          import { readFileSync } from 'fs';
-          const text = readFileSync('/tmp/digest.txt', 'utf8');
-          const token = process.env.TELEGRAM_BOT_TOKEN;
-          const chatId = process.env.TELEGRAM_CHAT_ID;
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.mode }}" != "all" ]; then
+            cd scripts && node generate-feed.js --${{ inputs.mode }}
+          else
+            cd scripts && node generate-feed.js --tweets-only
+          fi
 
-          async function send(chunk) {
-            const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ chat_id: chatId, text: chunk })
-            });
-            const r = await res.json();
-            if (!r.ok) console.error('Telegram error:', r.description);
-          }
-
-          const chunks = [];
-          let remaining = text;
-          while (remaining.length > 4000) {
-            let cut = remaining.lastIndexOf('\n\n', 4000);
-            if (cut === -1) cut = 4000;
-            chunks.push(remaining.slice(0, cut));
-            remaining = remaining.slice(cut).trim();
-          }
-          chunks.push(remaining);
-          for (const chunk of chunks) {
-            await send(chunk);
-            await new Promise(r => setTimeout(r, 1000));
-          }
-          console.log('Sent', chunks.length, 'message(s)');
-          EOF
-
-      - name: Send to Telegram
-        if: steps.prepare.outputs.status == 'ok'
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: node /tmp/send-telegram.mjs
-
-      - name: No content today
-        if: steps.prepare.outputs.status != 'ok'
-        run: echo "No new content today, skipping delivery."
+      - name: Commit and push feeds
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add feed-x.json feed-podcasts.json feed-blogs.json state-feed.json
+          git diff --cached --quiet || git commit -m "chore: update feeds [skip ci]"
+          git push
