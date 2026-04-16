@@ -1,4 +1,4 @@
-name: BuilderPulse Daily Push
+name: BuilderPulse 每日推送
 
 on:
   schedule:
@@ -18,24 +18,22 @@ jobs:
           YEAR=$(date -u '+%Y')
 
           URL="https://raw.githubusercontent.com/BuilderPulse/BuilderPulse/main/zh/${YEAR}/${TODAY}.md"
-          CONTENT=$(curl -sf "$URL" || echo "")
+          CONTENT=$(curl -sf "$URL" || true)
 
           if [ -z "$CONTENT" ]; then
             echo "今日报告还未发布，跳过"
             exit 0
           fi
 
-          # 取前3500字符，避免超过Telegram 4096字符限制
-          MESSAGE=$(echo "$CONTENT" | head -c 3500)
-          MESSAGE="${MESSAGE}
-
----
-📖 [查看完整报告](https://github.com/BuilderPulse/BuilderPulse/blob/main/zh/${YEAR}/${TODAY}.md)"
+          SUMMARY=$(echo "$CONTENT" | head -c 3000)
+          LINK="https://github.com/BuilderPulse/BuilderPulse/blob/main/zh/${YEAR}/${TODAY}.md"
 
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            -d chat_id="${TELEGRAM_CHAT_ID}" \
-            --data-urlencode text="${MESSAGE}" \
-            -d parse_mode="Markdown" \
-            -d disable_web_page_preview="true"
+            -H "Content-Type: application/json" \
+            -d "{
+              \"chat_id\": \"${TELEGRAM_CHAT_ID}\",
+              \"text\": $(echo "${SUMMARY}\n\n📖 完整报告: ${LINK}" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'),
+              \"disable_web_page_preview\": true
+            }"
 
           echo "推送完成"
