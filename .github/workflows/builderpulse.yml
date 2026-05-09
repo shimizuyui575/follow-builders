@@ -2,7 +2,7 @@ name: BuilderPulse 每日推送
 
 on:
   schedule:
-    - cron: '0 */2 * * *'
+    - cron: '0 6 * * *'  # 每天 UTC 06:00 = 日本时间 15:00
   workflow_dispatch:
 
 jobs:
